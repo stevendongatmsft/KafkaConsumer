@@ -95,6 +95,7 @@ func retrieveKey() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Println("printing out the bodytte")
 	fmt.Printf("%s\n", bodyText)
 }
 
