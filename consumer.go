@@ -83,7 +83,11 @@ func (cgh *consumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error {
 	return nil
 }
 
-func retrieveKey() {
+var datakey struct {
+	Key string `json:"key"`
+}
+
+func retrieveKey() *rsa.PrivateKey {
 	client := &http.Client{}
 	var data = strings.NewReader("{\"maa_endpoint\": \"" + os.Getenv("SkrClientMAAEndpoint") + "\", \"akv_endpoint\": \"" + os.Getenv("SkrClientAKVEndpoint") + "\", \"kid\": \"" + os.Getenv("SkrClientKID") + "\"}")
 	req, err := http.NewRequest("POST", "http://localhost:8080/key/release", data)
@@ -103,22 +107,28 @@ func retrieveKey() {
 	}
 	fmt.Println("printing out the bodytte")
 	fmt.Printf("%s\n", string(bodyText))
-	rsaPrivatekey, err := RSAPrivateKeyFromJWK(bodyText)
-	if err != nil {
-		fmt.Println("cannot convertrsa key")
+
+	if err := json.Unmarshal(bodyText, &datakey); err != nil {
+		fmt.Println("Error:", err)
 	}
-	fmt.Printf("keyis : %+v", rsaPrivatekey)
-	var plaintext []byte
-	ad := "VmSFXEsKQYs3XDreNgZfwQpo4kFXj9STNaftw5hRK5pLq8BLYERBEI79tE0B2HuIDCGl8M4LY+ukt4b7MyL8WMCufYqkNLC7EFb8N4Ml3Une/fot0ABOm+8Zwb8rQBjyow2acaUqLb5SQRzBzJZ/XBKC2b6eP8qZK28QwCOo8EZzjt7L+X0csAd89GYdDGZYEcRiZwTOMTDwg78sN6KpAxOgvmjr+ocGByZ1KaAzNif8PhNGZ7jaWniXNdVhJQZUR56a/1PHTzcCt0uHfz4VtCsKYLkpB8iRb0yJgQ5XSRJMhBbvFMWFqMwOCZnHXJdQT8CMAkBoQ4jE4LSTx7BPiwJjOB1kxVUqvldXFFdlDw0ecXi3CiZTvAVtf1WWrUuIsyWFnkZS+WIK6WSHbcLAsrWHCtFnAb/m0LgUqQtoMRhUQQXugJQREfUIRr8bQsj+x9W9CSBZCemzbH+qBJM8dxOIh2H6jxx6ALUCz/85yeY4JTlGzbxnTAzgdIdCWp9w"
-	plaintext, err = rsa.DecryptOAEP(sha256.New(), rand.Reader, rsaPrivatekey, []byte(ad), nil)
+	k, err := RSAPrivateKeyFromJWK([]byte(datakey.Key))
 	if err != nil {
-		fmt.Println("unwrapp failed")
+		fmt.Println("erexsd")
 	}
-	fmt.Println("plain data ", plaintext)
+
+	return k
+	// fmt.Printf("key is : %+v", rsaPrivatekey)
+	// var plaintext []byte
+	// ad := "VmSFXEsKQYs3XDreNgZfwQpo4kFXj9STNaftw5hRK5pLq8BLYERBEI79tE0B2HuIDCGl8M4LY+ukt4b7MyL8WMCufYqkNLC7EFb8N4Ml3Une/fot0ABOm+8Zwb8rQBjyow2acaUqLb5SQRzBzJZ/XBKC2b6eP8qZK28QwCOo8EZzjt7L+X0csAd89GYdDGZYEcRiZwTOMTDwg78sN6KpAxOgvmjr+ocGByZ1KaAzNif8PhNGZ7jaWniXNdVhJQZUR56a/1PHTzcCt0uHfz4VtCsKYLkpB8iRb0yJgQ5XSRJMhBbvFMWFqMwOCZnHXJdQT8CMAkBoQ4jE4LSTx7BPiwJjOB1kxVUqvldXFFdlDw0ecXi3CiZTvAVtf1WWrUuIsyWFnkZS+WIK6WSHbcLAsrWHCtFnAb/m0LgUqQtoMRhUQQXugJQREfUIRr8bQsj+x9W9CSBZCemzbH+qBJM8dxOIh2H6jxx6ALUCz/85yeY4JTlGzbxnTAzgdIdCWp9w"
+	// plaintext, err = rsa.DecryptOAEP(sha256.New(), rand.Reader, rsaPrivatekey, []byte(ad), nil)
+	// if err != nil {
+	// 	fmt.Println("unwrapp failed")
+	// }
+	// fmt.Println("plain data ", plaintext)
 }
 
 func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	retrieveKey()
+	key := retrieveKey()
 	for {
 		select {
 		case message, ok := <-claim.Messages():
@@ -126,7 +136,17 @@ func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 				log.Printf("message channel was closed")
 				return nil
 			}
-			log.Printf("Message received: value=%s, partition=%d, offset=%d", string(message.Value), message.Partition, message.Offset)
+			annotationBytes, err := base64.StdEncoding.DecodeString(string(message.Value))
+			if err != nil {
+				fmt.Println("err decoding message value ")
+			}
+
+			plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, key, annotationBytes, nil)
+			if err != nil {
+				fmt.Println("err decrypting message")
+			}
+
+			log.Printf("Message received: value=%s, partition=%d, offset=%d", plaintext, message.Partition, message.Offset)
 			session.MarkMessage(message, "")
 		// Should return when `session.Context()` is done.
 		// If not, will raise `ErrRebalanceInProgress` or `read tcp <ip>:<port>: i/o timeout` when kafka rebalance. see:
@@ -153,7 +173,8 @@ func inClusterKafkaConfig() (kafkaConfig *sarama.Config, err error) {
 	return kafkaConfig, nil
 }
 
-func RSAPrivateKeyFromJWK(jwkJSONBytes []byte) (*rsa.PrivateKey, error) {
+func RSAPrivateKeyFromJWK(key1 []byte) (*rsa.PrivateKey, error) {
+
 	var jwkData struct {
 		N string `json:"n"`
 		E string `json:"e"`
@@ -162,28 +183,28 @@ func RSAPrivateKeyFromJWK(jwkJSONBytes []byte) (*rsa.PrivateKey, error) {
 		Q string `json:"q"`
 	}
 
-	if err := json.Unmarshal(jwkJSONBytes, &jwkData); err != nil {
-		fmt.Println("cannot unmarshall")
+	if err := json.Unmarshal(key1, &jwkData); err != nil {
+		fmt.Println("")
 	}
 	n, err := base64.RawURLEncoding.DecodeString(jwkData.N)
 	if err != nil {
-		fmt.Println("cannot decode N")
+		fmt.Println("")
 	}
 	e, err := base64.RawURLEncoding.DecodeString(jwkData.E)
 	if err != nil {
-		fmt.Println("cannot decode E")
+		fmt.Println("")
 	}
 	d, err := base64.RawURLEncoding.DecodeString(jwkData.D)
 	if err != nil {
-		fmt.Println("cannot decode D")
+		fmt.Println("")
 	}
 	p, err := base64.RawURLEncoding.DecodeString(jwkData.P)
 	if err != nil {
-		fmt.Println("cannot decode P")
+		fmt.Println("")
 	}
 	q, err := base64.RawURLEncoding.DecodeString(jwkData.Q)
 	if err != nil {
-		fmt.Println("cannot decode Q")
+		fmt.Println("")
 	}
 
 	key := &rsa.PrivateKey{
