@@ -2,12 +2,23 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/Shopify/sarama"
+
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+
+	"github.com/Microsoft/confidential-sidecar-containers/pkg/attest"
+	"github.com/Microsoft/confidential-sidecar-containers/pkg/skr"
 )
 
 func main() {
@@ -81,7 +92,15 @@ func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 				log.Printf("message channel was closed")
 				return nil
 			}
-			log.Printf("Message received: value=%s, partition=%d, offset=%d", string(message.Value), message.Partition, message.Offset)
+
+			// Decrypt the message here
+			plaintext, err := decryptMessage(message.Value)
+			if err != nil {
+				log.Printf("Error decrypting message: %v", err)
+				continue
+			}
+
+			log.Printf("Message received: value=%s, partition=%d, offset=%d", string(plaintext), message.Partition, message.Offset)
 			session.MarkMessage(message, "")
 		// Should return when `session.Context()` is done.
 		// If not, will raise `ErrRebalanceInProgress` or `read tcp <ip>:<port>: i/o timeout` when kafka rebalance. see:
@@ -106,4 +125,89 @@ func inClusterKafkaConfig() (kafkaConfig *sarama.Config, err error) {
 	kafkaConfig.Version = sarama.V0_10_2_1
 
 	return kafkaConfig, nil
+}
+
+func decryptMessage(ciphertext []byte) ([]byte, error) {
+	// Logic for decryption using the unwrapping logic from UnWrapKey function
+	// Return the decrypted message
+	// Convert ciphertext to the expected input format
+	var input keyProviderInput
+	str := string(ciphertext)
+	err := json.Unmarshal(ciphertext, &input)
+	if err != nil {
+		return nil, fmt.Errorf("Ill-formed input: %v. Error: %v", str, err)
+	}
+
+	// Extract decryption parameters
+	var dc = input.KeyUnwrapParams.Dc
+	if len(dc.Parameters["attestation-agent"]) == 0 {
+		return nil, fmt.Errorf("attestation-agent must be specified in decryption config parameters: %v", str)
+	}
+	aa, _ := base64.StdEncoding.DecodeString(dc.Parameters["attestation-agent"][0])
+
+	if string(aa) != "aasp" && string(aa) != "aaa" {
+		return nil, fmt.Errorf("Unexpected attestation agent %v specified", string(aa))
+	}
+
+	annotationBytes, err := base64.StdEncoding.DecodeString(input.KeyUnwrapParams.Annotation)
+	if err != nil {
+		return nil, fmt.Errorf("Annotation is not a base64 encoding: %v. Error: %v", input.KeyUnwrapParams.Annotation, err)
+	}
+
+	var annotation AnnotationPacket
+	err = json.Unmarshal(annotationBytes, &annotation)
+	if err != nil {
+		return nil, fmt.Errorf("Ill-formed annotation packet: %v. Error: %v", input.KeyUnwrapParams.Annotation, err)
+	}
+
+	bearerToken := ""
+	clientID := os.Getenv("AZURE_CLIENT_ID")
+	tenantID := os.Getenv("AZURE_TENANT_ID")
+	tokenFile := os.Getenv("AZURE_FEDERATED_TOKEN_FILE")
+	if clientID != "" && tenantID != "" && tokenFile != "" {
+		bearerToken, err = getAccessTokenFromFederatedToken(context.Background(), tokenFile, clientID, tenantID, "https://managedhsm.azure.net")
+		if err != nil {
+			return nil, fmt.Errorf("Failed to obtain access token to MHSM: %v", err)
+		}
+	}
+
+	mhsm := skr.MHSM{
+		Endpoint:    annotation.KmsEndpoint,
+		APIVersion:  "api-version=7.3-preview",
+		BearerToken: bearerToken,
+	}
+
+	maa := attest.MAA{
+		Endpoint:   annotation.AttesterEndpoint,
+		TEEType:    "SevSnpVM",
+		APIVersion: "api-version=2020-10-01",
+	}
+
+	skrKeyBlob := skr.KeyBlob{
+		KID:       annotation.Kid,
+		Authority: maa,
+		MHSM:      mhsm,
+	}
+
+	keyBytes, err := skr.SecureKeyRelease("", azure_info.CertCache, azure_info.Identity, skrKeyBlob)
+	if err != nil {
+		return nil, fmt.Errorf("SKR failed: %v", err)
+	}
+
+	key, err := x509.ParsePKCS8PrivateKey(keyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("Released key is invalid: %v", err)
+	}
+
+	var plaintext []byte
+	if privkey, ok := key.(*rsa.PrivateKey); ok {
+		plaintext, err = rsa.DecryptOAEP(sha256.New(), rand.Reader, privkey, annotation.WrappedData, nil)
+		if err != nil {
+			return nil, fmt.Errorf("Unwrapping failed: %v", err)
+		}
+	} else {
+		return nil, fmt.Errorf("Released key is not a RSA private key: %v", err)
+	}
+
+	return plaintext, nil
 }
