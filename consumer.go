@@ -87,23 +87,23 @@ var datakey struct {
 	Key string `json:"key"`
 }
 
-func retrieveKey() *rsa.PrivateKey {
+func retrieveKey() (*rsa.PrivateKey, error) {
 	client := &http.Client{}
 	var data = strings.NewReader("{\"maa_endpoint\": \"" + os.Getenv("SkrClientMAAEndpoint") + "\", \"akv_endpoint\": \"" + os.Getenv("SkrClientAKVEndpoint") + "\", \"kid\": \"" + os.Getenv("SkrClientKID") + "\"}")
 	req, err := http.NewRequest("POST", "http://localhost:8080/key/release", data)
 	if err != nil {
 
-		log.Fatal(err)
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	fmt.Println("printing out the bodytte")
 	fmt.Printf("%s\n", string(bodyText))
@@ -115,20 +115,17 @@ func retrieveKey() *rsa.PrivateKey {
 	if err != nil {
 		fmt.Println("erexsd")
 	}
+	fmt.Printf("printint ouf the private key %+v", k)
 
-	return k
-	// fmt.Printf("key is : %+v", rsaPrivatekey)
-	// var plaintext []byte
-	// ad := "VmSFXEsKQYs3XDreNgZfwQpo4kFXj9STNaftw5hRK5pLq8BLYERBEI79tE0B2HuIDCGl8M4LY+ukt4b7MyL8WMCufYqkNLC7EFb8N4Ml3Une/fot0ABOm+8Zwb8rQBjyow2acaUqLb5SQRzBzJZ/XBKC2b6eP8qZK28QwCOo8EZzjt7L+X0csAd89GYdDGZYEcRiZwTOMTDwg78sN6KpAxOgvmjr+ocGByZ1KaAzNif8PhNGZ7jaWniXNdVhJQZUR56a/1PHTzcCt0uHfz4VtCsKYLkpB8iRb0yJgQ5XSRJMhBbvFMWFqMwOCZnHXJdQT8CMAkBoQ4jE4LSTx7BPiwJjOB1kxVUqvldXFFdlDw0ecXi3CiZTvAVtf1WWrUuIsyWFnkZS+WIK6WSHbcLAsrWHCtFnAb/m0LgUqQtoMRhUQQXugJQREfUIRr8bQsj+x9W9CSBZCemzbH+qBJM8dxOIh2H6jxx6ALUCz/85yeY4JTlGzbxnTAzgdIdCWp9w"
-	// plaintext, err = rsa.DecryptOAEP(sha256.New(), rand.Reader, rsaPrivatekey, []byte(ad), nil)
-	// if err != nil {
-	// 	fmt.Println("unwrapp failed")
-	// }
-	// fmt.Println("plain data ", plaintext)
+	return k, nil
+
 }
 
 func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	key := retrieveKey()
+	key, err := retrieveKey()
+	if err != nil {
+		fmt.Println("cannotretrieve private key")
+	}
 	for {
 		select {
 		case message, ok := <-claim.Messages():
@@ -136,17 +133,23 @@ func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 				log.Printf("message channel was closed")
 				return nil
 			}
-			annotationBytes, err := base64.StdEncoding.DecodeString(string(message.Value))
-			if err != nil {
-				fmt.Println("err decoding message value ")
+			if key != nil {
+				annotationBytes, err := base64.StdEncoding.DecodeString(string(message.Value))
+				if err != nil {
+					fmt.Println("err decoding message value ")
+				}
+
+				plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, key, annotationBytes, nil)
+				if err != nil {
+					fmt.Println("err decrypting message")
+				}
+
+				log.Printf("Message received: value=%s, partition=%d, offset=%d", plaintext, message.Partition, message.Offset)
+
+			} else {
+				log.Printf("Message received: value=%s, partition=%d, offset=%d", message.Value, message.Partition, message.Offset)
 			}
 
-			plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, key, annotationBytes, nil)
-			if err != nil {
-				fmt.Println("err decrypting message")
-			}
-
-			log.Printf("Message received: value=%s, partition=%d, offset=%d", plaintext, message.Partition, message.Offset)
 			session.MarkMessage(message, "")
 		// Should return when `session.Context()` is done.
 		// If not, will raise `ErrRebalanceInProgress` or `read tcp <ip>:<port>: i/o timeout` when kafka rebalance. see:
