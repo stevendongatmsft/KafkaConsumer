@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/Shopify/sarama"
@@ -26,9 +26,10 @@ func main() {
 	}
 
 	cgh := &consumerGroupHandler{
-		ready: make(chan bool),
-		end:   make(chan int, 1),
-		done:  make(chan bool),
+		ready:    make(chan bool),
+		end:      make(chan int, 1),
+		done:     make(chan bool),
+		messages: make(chan string, 100),
 	}
 	ctx := context.Background()
 	go func() {
@@ -38,9 +39,26 @@ func main() {
 		}
 
 	}()
+	getRoot := func(w http.ResponseWriter, r *http.Request) {
+		message := <-cgh.messages
+		fmt.Printf("got / request\n")
+		io.WriteString(w, fmt.Sprintf("%s\n", message))
+	}
 
 	<-cgh.ready // Await till the consumer has been set up
 	log.Println("Sarama consumer up and running!...")
+
+	http.HandleFunc("/", getRoot)
+
+	go func() {
+		err = http.ListenAndServe(":3333", nil)
+		if errors.Is(err, http.ErrServerClosed) {
+			fmt.Printf("server closed\n")
+		} else if err != nil {
+			fmt.Printf("error starting server: %s\n", err)
+			os.Exit(1)
+		}
+	}()
 
 	// waiting for the end of all messages received or an OS signal
 	select {
@@ -61,9 +79,10 @@ func main() {
 
 // struct defining the handler for the consuming Sarama method
 type consumerGroupHandler struct {
-	ready chan bool
-	end   chan int
-	done  chan bool
+	ready    chan bool
+	end      chan int
+	done     chan bool
+	messages chan string
 }
 
 func (cgh *consumerGroupHandler) Setup(sarama.ConsumerGroupSession) error {
@@ -77,29 +96,7 @@ func (cgh *consumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error {
 	return nil
 }
 
-func retrieveKey() {
-	client := &http.Client{}
-	var data = strings.NewReader("{\"maa_endpoint\": \"" + os.Getenv("SkrClientMAAEndpoint") + "\", \"akv_endpoint\": \"" + os.Getenv("SkrClientAKVEndpoint") + "\", \"kid\": \"" + os.Getenv("SkrClientKID") + "\"}")
-	req, err := http.NewRequest("POST", "http://localhost:8080/key/release", data)
-	if err != nil {
-
-		log.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-	bodyText, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("%s\n", bodyText)
-}
-
 func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	retrieveKey()
 	for {
 		select {
 		case message, ok := <-claim.Messages():
@@ -108,6 +105,7 @@ func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 				return nil
 			}
 			log.Printf("Message received: value=%s, partition=%d, offset=%d", string(message.Value), message.Partition, message.Offset)
+			cgh.messages <- string(message.Value)
 			session.MarkMessage(message, "")
 		// Should return when `session.Context()` is done.
 		// If not, will raise `ErrRebalanceInProgress` or `read tcp <ip>:<port>: i/o timeout` when kafka rebalance. see:
