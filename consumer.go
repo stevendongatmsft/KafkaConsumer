@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/Shopify/sarama"
@@ -73,7 +77,29 @@ func (cgh *consumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error {
 	return nil
 }
 
+func retrieveKey() {
+	client := &http.Client{}
+	var data = strings.NewReader("{\"maa_endpoint\": \"" + os.Getenv("SkrClientMAAEndpoint") + "\", \"akv_endpoint\": \"" + os.Getenv("SkrClientAKVEndpoint") + "\", \"kid\": \"" + os.Getenv("SkrClientKID") + "\"}")
+	req, err := http.NewRequest("POST", "http://localhost:8080/key/release", data)
+	if err != nil {
+
+		log.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+	bodyText, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s\n", bodyText)
+}
+
 func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	retrieveKey()
 	for {
 		select {
 		case message, ok := <-claim.Messages():
