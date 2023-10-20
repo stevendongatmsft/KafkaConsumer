@@ -20,6 +20,18 @@ import (
 	"github.com/Shopify/sarama"
 )
 
+type OuterJSON struct {
+	Key string `json:"key"`
+}
+
+type JWKData struct {
+	N string `json:"n"`
+	E string `json:"e"`
+	D string `json:"d"`
+	P string `json:"p"`
+	Q string `json:"q"`
+}
+
 func main() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGKILL)
@@ -154,36 +166,38 @@ func inClusterKafkaConfig() (kafkaConfig *sarama.Config, err error) {
 }
 
 func RSAPrivateKeyFromJWK(jwkJSONBytes []byte) (*rsa.PrivateKey, error) {
-	var jwkData struct {
-		N string `json:"n"`
-		E string `json:"e"`
-		D string `json:"d"`
-		P string `json:"p"`
-		Q string `json:"q"`
+	// Unmarshal the outer JSON
+	var outer OuterJSON
+	if err := json.Unmarshal(jwkJSONBytes, &outer); err != nil {
+		return nil, fmt.Errorf("Error unmarshalling outer JSON: %v", err)
 	}
 
-	if err := json.Unmarshal(jwkJSONBytes, &jwkData); err != nil {
-		fmt.Println("cannot unmarshall")
+	// Now, unmarshal the inner JWK JSON
+	var jwk JWKData
+	if err := json.Unmarshal([]byte(outer.Key), &jwk); err != nil {
+		return nil, fmt.Errorf("Error unmarshalling inner JWK JSON: %v", err)
 	}
-	n, err := base64.RawURLEncoding.DecodeString(jwkData.N)
+
+	// Decode base64 values and build the RSA key
+	n, err := base64.RawURLEncoding.DecodeString(jwk.N)
 	if err != nil {
-		fmt.Println("cannot decode N")
+		return nil, err
 	}
-	e, err := base64.RawURLEncoding.DecodeString(jwkData.E)
+	e, err := base64.RawURLEncoding.DecodeString(jwk.E)
 	if err != nil {
-		fmt.Println("cannot decode E")
+		return nil, err
 	}
-	d, err := base64.RawURLEncoding.DecodeString(jwkData.D)
+	d, err := base64.RawURLEncoding.DecodeString(jwk.D)
 	if err != nil {
-		fmt.Println("cannot decode D")
+		return nil, err
 	}
-	p, err := base64.RawURLEncoding.DecodeString(jwkData.P)
+	p, err := base64.RawURLEncoding.DecodeString(jwk.P)
 	if err != nil {
-		fmt.Println("cannot decode P")
+		return nil, err
 	}
-	q, err := base64.RawURLEncoding.DecodeString(jwkData.Q)
+	q, err := base64.RawURLEncoding.DecodeString(jwk.Q)
 	if err != nil {
-		fmt.Println("cannot decode Q")
+		return nil, err
 	}
 
 	key := &rsa.PrivateKey{
