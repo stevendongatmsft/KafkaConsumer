@@ -163,11 +163,12 @@ func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 				if err != nil {
 					fmt.Println("err decrypting message")
 				}
-
+				cgh.messages <- string(plaintext)
 				log.Printf("Message received: value=%s, partition=%d, offset=%d", plaintext, message.Partition, message.Offset)
 
 			} else {
 				log.Printf("Message received: value=%s, partition=%d, offset=%d", message.Value, message.Partition, message.Offset)
+				cgh.messages <- string(message.Value)
 			}
 
 			session.MarkMessage(message, "")
