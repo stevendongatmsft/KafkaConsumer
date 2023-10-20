@@ -37,7 +37,7 @@ func main() {
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGKILL)
 	cg, _ := inClusterKafkaConfig()
 
-	consumerGroup, err := sarama.NewConsumerGroup([]string{"my-cluster-kafka-bootstrap:9092"}, "groupid19231", cg)
+	consumerGroup, err := sarama.NewConsumerGroup([]string{"my-cluster-kafka-bootstrap:9092"}, "groupid19232", cg)
 	if err != nil {
 		log.Printf("Error creating the Sarama consumer: %v", err)
 		os.Exit(1)
@@ -115,17 +115,32 @@ func retrieveKey() {
 	}
 	fmt.Println("printing out the bodytte")
 	fmt.Printf("%s\n", string(bodyText))
-	rsaPrivatekey, err := RSAPrivateKeyFromJWK(bodyText)
+	// Unmarshal the entire response to extract the "key" attribute
+	var keyWrapper map[string]string
+	if err := json.Unmarshal(bodyText, &keyWrapper); err != nil {
+		log.Fatal("Error unmarshalling the key wrapper:", err)
+	}
+
+	// Extract the inner JSON from the "key" attribute
+	innerKeyJSON := keyWrapper["key"]
+
+	// Now use this inner JSON to construct the RSA private key
+	rsaPrivatekey, err := RSAPrivateKeyFromJWK([]byte(innerKeyJSON))
 	if err != nil {
 		fmt.Println("cannot convertrsa key")
 	}
+
 	fmt.Printf("keyis : %+v", rsaPrivatekey)
 	var plaintext []byte
-	ad := "VmSFXEsKQYs3XDreNgZfwQpo4kFXj9STNaftw5hRK5pLq8BLYERBEI79tE0B2HuIDCGl8M4LY+ukt4b7MyL8WMCufYqkNLC7EFb8N4Ml3Une/fot0ABOm+8Zwb8rQBjyow2acaUqLb5SQRzBzJZ/XBKC2b6eP8qZK28QwCOo8EZzjt7L+X0csAd89GYdDGZYEcRiZwTOMTDwg78sN6KpAxOgvmjr+ocGByZ1KaAzNif8PhNGZ7jaWniXNdVhJQZUR56a/1PHTzcCt0uHfz4VtCsKYLkpB8iRb0yJgQ5XSRJMhBbvFMWFqMwOCZnHXJdQT8CMAkBoQ4jE4LSTx7BPiwJjOB1kxVUqvldXFFdlDw0ecXi3CiZTvAVtf1WWrUuIsyWFnkZS+WIK6WSHbcLAsrWHCtFnAb/m0LgUqQtoMRhUQQXugJQREfUIRr8bQsj+x9W9CSBZCemzbH+qBJM8dxOIh2H6jxx6ALUCz/85yeY4JTlGzbxnTAzgdIdCWp9w"
+	ad := "ZPk4ZUx9uQOmsb4JxEdG8rQXXuSCZNWdDdNxFJKUQSQRPatbHjL6hBI2hj5k2scqEC+AlwD5a6KeLuYxOHBfz2A3aPI0jIyC4DSFAdOVTJo/jAPQbsOU/j9kceM+Di7n0dBqFKMf5McvANDYkNqmR8ICRWPrhbsjvVXtviwV2M7x7FZUn0RveIIs3vgi2zgWxh7ceVUs3Ei05zH6E70lAmKf/pWZL9ArkHcNJ/NmQ1DtmWcjmVWNdTmh/Mf5GRcTjO1UJljhTQerWvtfsMGg3jP+p4f561jBbJqLIuPveO8dM76A0qmrLPppJG5+nXeTF/It4MgW5ZZP0XCDBSmQhh3VvKjn2ywlOaTw0b9ix518RraO5WIbFxLT/iVmLDx6UlUiXtit7C9lEMXMUhL8Jhph0mLJ+lPS6iiLM0rXZjjlVE7HdDWH/J//d7707LG5SViNqnB1x56NHJJx3TPlbVe168EA4/0GmFSPtzRtb7pRwxPzwwJ+OtbacznBusCI"
 	plaintext, err = rsa.DecryptOAEP(sha256.New(), rand.Reader, rsaPrivatekey, []byte(ad), nil)
 	if err != nil {
-		fmt.Println("unwrapp failed")
+		fmt.Println("Decryption failed with error:", err)
+	} else {
+		fmt.Println("Decrypted data:", string(plaintext))
+		log.Printf("Decrypted data: %s", string(plaintext))
 	}
+
 	fmt.Println("plain data ", plaintext)
 }
 
@@ -211,6 +226,8 @@ func RSAPrivateKeyFromJWK(jwkJSONBytes []byte) (*rsa.PrivateKey, error) {
 			new(big.Int).SetBytes(q),
 		},
 	}
+
+	key.Precompute()
 
 	return key, nil
 }
