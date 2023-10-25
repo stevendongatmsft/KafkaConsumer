@@ -156,12 +156,12 @@ func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 			if key != nil {
 				annotationBytes, err := base64.StdEncoding.DecodeString(string(message.Value))
 				if err != nil {
-					fmt.Println("err decoding message value ")
+					fmt.Printf("err decoding message value %q\n", err.Error())
 				}
 
 				plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, key, annotationBytes, nil)
 				if err != nil {
-					fmt.Println("err decrypting message")
+					fmt.Printf("err decrypting message %q\n", err.Error())
 				}
 				cgh.messages <- string(plaintext)
 				log.Printf("Message received: value=%s, partition=%d, offset=%d", plaintext, message.Partition, message.Offset)
