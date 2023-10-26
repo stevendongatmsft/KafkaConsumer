@@ -40,9 +40,14 @@ func main() {
 	}
 	ctx := context.Background()
 	go func() {
+		topic := os.Getenv("TOPIC")
+		if len(topic) == 0 {
+			topic = "my-topic"
+		}
+		fmt.Printf("Setting kafka topic to %q\n", topic)
 		for {
 			// this method calls the methods handler on each stage: setup, consume and cleanup
-			consumerGroup.Consume(ctx, []string{"my-topic"}, cgh)
+			consumerGroup.Consume(ctx, []string{topic}, cgh)
 		}
 
 	}()
@@ -58,7 +63,8 @@ func main() {
 	http.HandleFunc("/", getRoot)
 
 	go func() {
-		err = http.ListenAndServe(":3333", nil)
+		fmt.Println("Web server starting")
+		err := http.ListenAndServe(":3333", nil)
 		if errors.Is(err, http.ErrServerClosed) {
 			fmt.Printf("server closed\n")
 		} else if err != nil {
