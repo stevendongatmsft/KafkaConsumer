@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -32,9 +33,10 @@ func main() {
 	}
 
 	cgh := &consumerGroupHandler{
-		ready: make(chan bool),
-		end:   make(chan int, 1),
-		done:  make(chan bool),
+		ready:    make(chan bool),
+		end:      make(chan int, 1),
+		done:     make(chan bool),
+		messages: make(chan string, 100),
 	}
 	ctx := context.Background()
 	go func() {
@@ -44,9 +46,26 @@ func main() {
 		}
 
 	}()
+	getRoot := func(w http.ResponseWriter, r *http.Request) {
+		message := <-cgh.messages
+		fmt.Printf("got / request\n")
+		io.WriteString(w, fmt.Sprintf("%s\n", message))
+	}
 
 	<-cgh.ready // Await till the consumer has been set up
 	log.Println("Sarama consumer up and running!...")
+
+	http.HandleFunc("/", getRoot)
+
+	go func() {
+		err = http.ListenAndServe(":3333", nil)
+		if errors.Is(err, http.ErrServerClosed) {
+			fmt.Printf("server closed\n")
+		} else if err != nil {
+			fmt.Printf("error starting server: %s\n", err)
+			os.Exit(1)
+		}
+	}()
 
 	// waiting for the end of all messages received or an OS signal
 	select {
@@ -67,9 +86,10 @@ func main() {
 
 // struct defining the handler for the consuming Sarama method
 type consumerGroupHandler struct {
-	ready chan bool
-	end   chan int
-	done  chan bool
+	ready    chan bool
+	end      chan int
+	done     chan bool
+	messages chan string
 }
 
 func (cgh *consumerGroupHandler) Setup(sarama.ConsumerGroupSession) error {
@@ -136,18 +156,19 @@ func (cgh *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 			if key != nil {
 				annotationBytes, err := base64.StdEncoding.DecodeString(string(message.Value))
 				if err != nil {
-					fmt.Println("err decoding message value ")
+					fmt.Printf("err decoding message value %q\n", err.Error())
 				}
 
 				plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, key, annotationBytes, nil)
 				if err != nil {
-					fmt.Println("err decrypting message")
+					fmt.Printf("err decrypting message %q\n", err.Error())
 				}
-
+				cgh.messages <- string(plaintext)
 				log.Printf("Message received: value=%s, partition=%d, offset=%d", plaintext, message.Partition, message.Offset)
 
 			} else {
 				log.Printf("Message received: value=%s, partition=%d, offset=%d", message.Value, message.Partition, message.Offset)
+				cgh.messages <- string(message.Value)
 			}
 
 			session.MarkMessage(message, "")
